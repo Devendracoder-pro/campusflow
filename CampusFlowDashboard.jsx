@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   BookOpen,
@@ -32,33 +32,6 @@ const navigation = [
   { label: 'Settings', icon: Settings },
 ];
 
-const defaultStats = [
-  { label: 'Total Students', value: '2,480', trend: '+5.2%', tone: 'indigo', icon: Users },
-  { label: 'Attendance Rate', value: '87.4%', trend: '+2.1%', tone: 'emerald', icon: ClipboardCheck },
-  { label: 'Pending Assignments', value: '126', trend: '-8.4%', tone: 'amber', icon: BookOpen },
-  { label: 'Upcoming Exams', value: '08', trend: '+2 this week', tone: 'rose', icon: CalendarDays },
-];
-
-const defaultSchedule = [
-  { time: '09:00 AM', title: 'Advanced Mathematics', room: 'Room 204 · Dr. Sarah Wilson', status: 'Completed', tone: 'slate' },
-  { time: '11:00 AM', title: 'Data Structures & Algorithms', room: 'Lab 03 · Prof. Michael Chen', status: 'Ongoing', tone: 'indigo' },
-  { time: '01:30 PM', title: 'Database Management', room: 'Room 118 · Dr. Olivia Martin', status: 'Upcoming', tone: 'amber' },
-  { time: '03:30 PM', title: 'Software Engineering', room: 'Room 301 · Prof. James Lee', status: 'Upcoming', tone: 'amber' },
-];
-
-const defaultAssignments = [
-  { title: 'Operating Systems Case Study', course: 'Computer Science · CS401', due: 'Today, 5:00 PM', submissions: '42 / 48', status: 'Pending' },
-  { title: 'Linear Algebra Problem Set', course: 'Mathematics · MA202', due: 'Tomorrow', submissions: '48 / 48', status: 'Submitted' },
-  { title: 'Database Schema Design', course: 'Computer Science · CS305', due: '18 Oct 2024', submissions: '36 / 40', status: 'Graded' },
-  { title: 'Research Methodology Review', course: 'Humanities · HM110', due: '21 Oct 2024', submissions: '29 / 45', status: 'Pending' },
-];
-
-const defaultNotices = [
-  { category: 'Urgent', title: 'Mid-semester examination schedule published', date: 'Today, 10:20 AM', tone: 'rose' },
-  { category: 'Academic', title: 'Faculty development workshop registrations open', date: 'Yesterday', tone: 'indigo' },
-  { category: 'Sports', title: 'Inter-college athletics trials this Friday', date: '16 Oct 2024', tone: 'emerald' },
-];
-
 const toneClasses = {
   indigo: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300',
   emerald: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300',
@@ -89,13 +62,16 @@ function StatCard({ stat, onAction }) {
 }
 
 export default function CampusFlowDashboard({
-  stats = defaultStats,
-  schedule = defaultSchedule,
-  assignments = defaultAssignments,
-  notices = defaultNotices,
-  attendance = 87.4,
-  user = { name: 'Alex Morgan', role: 'Administrator', initials: 'AM' },
+  apiBase = '/api',
 }) {
+  const [user, setUser] = useState(null);
+  const [students, setStudents] = useState([]);
+  const [faculty, setFaculty] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [attendanceEntries, setAttendanceEntries] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [dataError, setDataError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState('Dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -104,11 +80,54 @@ export default function CampusFlowDashboard({
   const [query, setQuery] = useState('');
   const [feedback, setFeedback] = useState('');
 
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const paths = ['/me', '/students', '/faculty', '/courses', '/attendance', '/payments'];
+        const responses = await Promise.all(paths.map((path) => fetch(`${apiBase}${path}`, { credentials: 'include' })));
+        if (responses.some((response) => response.status === 401)) throw new Error('Please sign in to view live campus data.');
+        if (responses.some((response) => !response.ok)) throw new Error('Unable to load live dashboard data.');
+        const payloads = await Promise.all(responses.map((response) => response.json()));
+        if (!active) return;
+        setUser(payloads[0].user);
+        setStudents(payloads[1].data || []);
+        setFaculty(payloads[2].data || []);
+        setCourses(payloads[3].data || []);
+        setAttendanceEntries(payloads[4].data || []);
+        setPayments(payloads[5].data || []);
+      } catch (error) {
+        if (active) setDataError(error.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [apiBase]);
+
+  const currentUser = user ? { name: user.display_name, role: user.role, initials: user.display_name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase() } : { name: 'Campus user', role: 'Loading', initials: '?' };
+  const today = new Date().toISOString().slice(0, 10);
+  const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+  const activeStudents = students.filter((student) => student.status === 'Active');
+  const presentToday = attendanceEntries.filter((entry) => entry.date === today && entry.status === 'Present').length;
+  const attendance = activeStudents.length ? Math.round((presentToday / activeStudents.length) * 1000) / 10 : 0;
+  const collected = payments.reduce((total, payment) => total + Number(payment.amount || 0), 0);
+  const stats = [
+    { label: 'Total Students', value: students.length.toLocaleString(), trend: 'Live', tone: 'indigo', icon: Users },
+    { label: 'Attendance Rate', value: `${attendance}%`, trend: 'Today', tone: 'emerald', icon: ClipboardCheck },
+    { label: 'Faculty Members', value: faculty.length.toLocaleString(), trend: 'Live', tone: 'amber', icon: BookOpen },
+    { label: 'Fees Collected', value: new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(collected), trend: 'Live', tone: 'rose', icon: WalletCards },
+  ];
+  const emptySchedule = [];
+  const emptyAssignments = [];
+  const emptyNotices = [];
+
   const filteredAssignments = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return assignments;
-    return assignments.filter((item) => `${item.title} ${item.course} ${item.status}`.toLowerCase().includes(normalized));
-  }, [assignments, query]);
+    if (!normalized) return emptyAssignments;
+    return emptyAssignments.filter((item) => `${item.title} ${item.course} ${item.status}`.toLowerCase().includes(normalized));
+  }, [query]);
 
   const closeMobileNav = () => setSidebarOpen(false);
   const notify = (message) => {
@@ -149,9 +168,9 @@ export default function CampusFlowDashboard({
             </nav>
 
             <div className={`border-t border-slate-700 p-3 ${collapsed ? 'lg:px-2' : ''}`}>
-              <button type="button" onClick={() => notify(`Opening ${user.name}'s profile.`)} title={collapsed ? user.name : undefined} className={`flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-700 ${collapsed ? 'lg:justify-center' : ''}`}>
-                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">{user.initials}</span>
-                <span className={`min-w-0 ${collapsed ? 'lg:hidden' : ''}`}><strong className="block truncate text-sm text-white">{user.name}</strong><small className="block truncate text-xs text-slate-400">{user.role}</small></span>
+              <button type="button" onClick={() => notify(`Opening ${currentUser.name}'s profile.`)} title={collapsed ? currentUser.name : undefined} className={`flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-700 ${collapsed ? 'lg:justify-center' : ''}`}>
+                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">{currentUser.initials}</span>
+                <span className={`min-w-0 ${collapsed ? 'lg:hidden' : ''}`}><strong className="block truncate text-sm text-white">{currentUser.name}</strong><small className="block truncate text-xs text-slate-400">{currentUser.role}</small></span>
                 <ChevronRight size={16} className={`ml-auto text-slate-500 ${collapsed ? 'lg:hidden' : ''}`} />
               </button>
             </div>
@@ -171,7 +190,7 @@ export default function CampusFlowDashboard({
                 <button type="button" onClick={() => setDark((value) => !value)} aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'} className="rounded-lg p-2.5 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">{dark ? <Sun size={19} /> : <Moon size={19} />}</button>
                 <button type="button" onClick={() => notify('You have 3 unread notifications.')} aria-label="Notifications" className="relative rounded-lg p-2.5 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"><Bell size={19} /><span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-900" /></button>
                 <div className="relative">
-                  <button type="button" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen} className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="grid size-9 place-items-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">{user.initials}</span><ChevronDown size={15} className="hidden text-slate-400 sm:block" /></button>
+                  <button type="button" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen} className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="grid size-9 place-items-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">{currentUser.initials}</span><ChevronDown size={15} className="hidden text-slate-400 sm:block" /></button>
                   {profileOpen && <div className="absolute right-0 top-12 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-800"><button type="button" onClick={() => { notify('Profile settings opened.'); setProfileOpen(false); }} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700">Profile</button><button type="button" onClick={() => { notify('Sign out is ready to connect to your auth endpoint.'); setProfileOpen(false); }} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700">Sign out</button></div>}
                 </div>
               </div>
@@ -179,24 +198,26 @@ export default function CampusFlowDashboard({
 
             <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-7 md:px-8 lg:px-10">
               <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-                <div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">Tuesday, 15 October 2024</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white md:text-4xl">Good morning, {user.name.split(' ')[0]}</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Here is what is happening across your campus today.</p></div>
+                <div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">{todayLabel}</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white md:text-4xl">Good morning, {currentUser.name.split(' ')[0]}</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Metrics below are fetched from your CampusFlow workspace.</p></div>
                 <button type="button" onClick={() => notify('Calendar view opened.')} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-700"><CalendarDays size={17} /> View calendar</button>
               </div>
 
+              {dataError && <div role="alert" className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{dataError}</div>}
+              {loading && <div className="mb-6 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Loading live workspace data...</div>}
               <section aria-label="Quick statistics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map((stat) => <StatCard key={stat.label} stat={stat} onAction={notify} />)}</section>
 
               <section className="mt-6 grid gap-6 xl:grid-cols-3">
                 <article className="rounded-xl border border-slate-200 bg-white shadow-sm xl:col-span-2 dark:border-slate-700 dark:bg-slate-800">
-                  <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Today&apos;s class schedule</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Tuesday, 15 October · 4 classes scheduled</p></div><button type="button" onClick={() => notify('Schedule options opened.')} aria-label="Schedule options" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"><MoreHorizontal size={18} /></button></div>
-                  <div className="divide-y divide-slate-100 p-1 dark:divide-slate-700">{schedule.map((item) => <div key={`${item.time}-${item.title}`} className="flex gap-4 px-4 py-4 sm:gap-7"><div className="w-16 shrink-0 pt-1 text-xs font-semibold text-slate-400">{item.time}</div><div className="relative flex min-w-0 flex-1 gap-3"><span className={`mt-1.5 size-2.5 shrink-0 rounded-full ring-4 ${item.status === 'Ongoing' ? 'bg-indigo-500 ring-indigo-50 dark:ring-indigo-500/20' : item.status === 'Completed' ? 'bg-slate-300 ring-slate-100 dark:bg-slate-500 dark:ring-slate-700' : 'bg-amber-400 ring-amber-50 dark:ring-amber-500/20'}`} /><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{item.title}</h3><Badge tone={item.tone}>{item.status}</Badge></div><p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{item.room}</p></div></div></div>)}</div>
+                  <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Today&apos;s class schedule</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Fetched from your timetable data</p></div><button type="button" onClick={() => notify('Schedule options opened.')} aria-label="Schedule options" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"><MoreHorizontal size={18} /></button></div>
+                  <div className="divide-y divide-slate-100 p-1 dark:divide-slate-700">{emptySchedule.length ? emptySchedule.map((item) => <div key={`${item.time}-${item.title}`} className="flex gap-4 px-4 py-4 sm:gap-7"><div className="w-16 shrink-0 pt-1 text-xs font-semibold text-slate-400">{item.time}</div><div className="relative flex min-w-0 flex-1 gap-3"><span className="mt-1.5 size-2.5 shrink-0 rounded-full bg-indigo-500" /><div className="min-w-0"><h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{item.title}</h3><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{item.room}</p></div></div></div>) : <p className="px-4 py-8 text-sm text-slate-500 dark:text-slate-400">No timetable data is available yet.</p>}</div>
                 </article>
 
                 <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between"><div><h2 className="font-bold text-slate-900 dark:text-white">Attendance overview</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Current semester</p></div><ClipboardCheck size={19} className="text-indigo-500" /></div><div className="flex flex-col items-center py-8"><div className="relative grid size-44 place-items-center rounded-full" style={{ background: `conic-gradient(#4f46e5 ${attendance * 3.6}deg, #e2e8f0 0deg)` }}><div className="grid size-32 place-items-center rounded-full bg-white dark:bg-slate-800"><div className="text-center"><strong className="block text-3xl font-bold text-slate-900 dark:text-white">{attendance}%</strong><span className="text-xs text-slate-500 dark:text-slate-400">overall rate</span></div></div></div><div className={`mt-6 flex items-center gap-2 text-sm font-semibold ${attendance < 75 ? 'text-amber-600' : 'text-emerald-600'}`}>{attendance < 75 ? <CircleAlert size={16} /> : <Check size={16} />}{attendance < 75 ? 'Needs attention' : 'Above target'}</div></div><div className="flex justify-between border-t border-slate-100 pt-4 text-xs dark:border-slate-700"><span className="text-slate-500 dark:text-slate-400">Target <strong className="text-slate-700 dark:text-slate-200">75%</strong></span><button type="button" onClick={() => notify('Attendance report opened.')} className="font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-300">View report <ChevronRight className="inline" size={14} /></button></div></article>
               </section>
 
               <section className="mt-6 grid gap-6 xl:grid-cols-3">
-                <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:col-span-2 dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Recent assignment submissions</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Review the latest student activity</p></div><button type="button" onClick={() => notify('All assignments opened.')} className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-300">View all</button></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/50 dark:text-slate-400"><tr><th className="px-5 py-3 font-semibold">Assignment</th><th className="px-5 py-3 font-semibold">Due date</th><th className="px-5 py-3 font-semibold">Submissions</th><th className="px-5 py-3 font-semibold">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-700">{filteredAssignments.map((item) => <tr key={item.title} className="transition hover:bg-slate-50 dark:hover:bg-slate-700/40"><td className="px-5 py-4"><strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">{item.title}</strong><span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{item.course}</span></td><td className="whitespace-nowrap px-5 py-4 text-xs text-slate-500 dark:text-slate-400">{item.due}</td><td className="px-5 py-4 text-sm text-slate-600 dark:text-slate-300">{item.submissions}</td><td className="px-5 py-4"><Badge tone={item.status === 'Submitted' ? 'emerald' : item.status === 'Graded' ? 'indigo' : 'amber'}>{item.status}</Badge></td></tr>)}</tbody></table></div></article>
-                <article className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Notice board</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Keep up with campus updates</p></div><button type="button" onClick={() => notify('New notice form opened.')} aria-label="Add notice" className="rounded-lg p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"><span className="text-xl leading-none">+</span></button></div><div className="divide-y divide-slate-100 dark:divide-slate-700">{notices.map((notice) => <div key={notice.title} className="px-5 py-4"><Badge tone={notice.tone}>{notice.category}</Badge><h3 className="mt-2 text-sm font-semibold leading-5 text-slate-800 dark:text-slate-100">{notice.title}</h3><p className="mt-1 text-xs text-slate-400">{notice.date}</p></div>)}</div><button type="button" onClick={() => notify('All announcements opened.')} className="w-full border-t border-slate-100 px-5 py-3 text-left text-sm font-semibold text-indigo-600 hover:bg-slate-50 dark:border-slate-700 dark:text-indigo-300 dark:hover:bg-slate-700/40">View all announcements <ChevronRight className="inline" size={15} /></button></article>
+                <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:col-span-2 dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Recent assignment submissions</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Only connected assignment data is shown</p></div><button type="button" onClick={() => notify('Assignments endpoint is not available in the current API.')} className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-300">View all</button></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/50 dark:text-slate-400"><tr><th className="px-5 py-3 font-semibold">Assignment</th><th className="px-5 py-3 font-semibold">Due date</th><th className="px-5 py-3 font-semibold">Submissions</th><th className="px-5 py-3 font-semibold">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-700">{filteredAssignments.length ? filteredAssignments.map((item) => <tr key={item.title} className="transition hover:bg-slate-50 dark:hover:bg-slate-700/40"><td className="px-5 py-4"><strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">{item.title}</strong><span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{item.course}</span></td><td className="whitespace-nowrap px-5 py-4 text-xs text-slate-500 dark:text-slate-400">{item.due}</td><td className="px-5 py-4 text-sm text-slate-600 dark:text-slate-300">{item.submissions}</td><td className="px-5 py-4"><Badge tone={item.status === 'Submitted' ? 'emerald' : item.status === 'Graded' ? 'indigo' : 'amber'}>{item.status}</Badge></td></tr>) : <tr><td colSpan="4" className="px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400">No assignment data is available from the current API.</td></tr>}</tbody></table></div></article>
+                <article className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Notice board</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Only connected notices are shown</p></div><button type="button" onClick={() => notify('Announcements endpoint is not available in the current API.')} aria-label="Add notice" className="rounded-lg p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"><span className="text-xl leading-none">+</span></button></div><div className="divide-y divide-slate-100 dark:divide-slate-700">{emptyNotices.length ? emptyNotices.map((notice) => <div key={notice.title} className="px-5 py-4"><Badge tone={notice.tone}>{notice.category}</Badge><h3 className="mt-2 text-sm font-semibold leading-5 text-slate-800 dark:text-slate-100">{notice.title}</h3><p className="mt-1 text-xs text-slate-400">{notice.date}</p></div>) : <p className="px-5 py-8 text-sm text-slate-500 dark:text-slate-400">No announcements are available yet.</p>}</div><button type="button" onClick={() => notify('Announcements endpoint is not available in the current API.')} className="w-full border-t border-slate-100 px-5 py-3 text-left text-sm font-semibold text-indigo-600 hover:bg-slate-50 dark:border-slate-700 dark:text-indigo-300 dark:hover:bg-slate-700/40">View all announcements <ChevronRight className="inline" size={15} /></button></article>
               </section>
             </main>
             {feedback && <div role="status" aria-live="polite" className="fixed bottom-5 right-5 z-50 rounded-lg bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-xl dark:bg-white dark:text-slate-900">{feedback}</div>}
