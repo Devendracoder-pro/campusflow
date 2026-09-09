@@ -127,6 +127,13 @@
   form.addEventListener('submit', async event => { if (dialogContext?.kind === 'staff') { event.preventDefault(); try { await request('/api/staff', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) }); dialog.close(); await renderPrincipal(); toast('Staff member connected'); } catch (e) { error.textContent = e.message; } } else if (dialogContext?.kind === 'payment') { event.preventDefault(); try { const input = Object.fromEntries(new FormData(form).entries()); await request('/api/payments', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }); await hydrate(); toast('Payment recorded'); dialog.close(); render(); } catch (e) { error.textContent = e.message; } } else await submitRecord(event); });
   authForm.addEventListener('submit', async event => { event.preventDefault(); const authError = document.getElementById('auth-error'); authError.textContent = ''; try { const result = await request(registering ? '/api/auth/register' : '/api/auth/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(authForm).entries())) }); currentUser = result.user; hideAuth(); render(); } catch (e) { authError.textContent = e.message; } });
   document.getElementById('auth-toggle').addEventListener('click', () => setAuthMode(!registering));
+  const sidebar = document.querySelector('.sidebar');
+  const sidebarScrim = document.getElementById('sidebar-scrim');
+  const mobileMenuButton = document.getElementById('mobile-menu-button');
+  function closeMobileMenu() { sidebar.classList.remove('open'); sidebarScrim.hidden = true; mobileMenuButton?.setAttribute('aria-expanded', 'false'); }
+  mobileMenuButton?.addEventListener('click', () => { const open = sidebar.classList.toggle('open'); sidebarScrim.hidden = !open; mobileMenuButton.setAttribute('aria-expanded', String(open)); });
+  sidebarScrim?.addEventListener('click', closeMobileMenu);
+  document.querySelectorAll('.sidebar a').forEach(link => link.addEventListener('click', closeMobileMenu));
   document.getElementById('logout-button').addEventListener('click', async () => { await request('/api/auth/logout', { method: 'POST' }).catch(() => {}); currentUser = null; setAuthMode(false); showAuth(); });
   document.getElementById('close-dialog').addEventListener('click', () => dialog.close()); document.getElementById('cancel-dialog').addEventListener('click', () => dialog.close());
   document.addEventListener('click', event => { const target = event.target.closest('[data-action]'); if (target?.dataset.action === 'add-staff') openStaff(); if (target?.dataset.action === 'remove-staff') removeStaff(target.dataset.id); if (target) handleAction(target.dataset.action, target.dataset.id); });
