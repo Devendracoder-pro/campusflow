@@ -6,7 +6,8 @@ const auth = require('./auth');
 const { handleApi, handleAttendance, handlePayments, handleStaff, handleAudit, handleDashboard, handleOnboarding } = require('./api');
 
 const root = __dirname;
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.pdf': 'application/pdf' };
+const builtRoot = path.join(root, 'dist');
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.pdf': 'application/pdf', '.svg': 'image/svg+xml' };
 const securityHeaders = {
   'Cache-Control': 'no-store',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -70,7 +71,10 @@ function createServer() {
     let pathname;
     try { pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
     catch { res.writeHead(400).end('Bad request'); return; }
-    const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
+    const relativePath = pathname === '/' ? '/index.html' : pathname;
+    const builtFile = path.resolve(builtRoot, '.' + relativePath);
+    const sourceFile = path.resolve(root, '.' + relativePath);
+    const file = fs.existsSync(builtFile) ? builtFile : sourceFile;
     if (!file.startsWith(root + path.sep)) { res.writeHead(403).end('Forbidden'); return; }
     if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405, { ...securityHeaders, Allow: 'GET, HEAD' }).end('Method not allowed'); return; }
     fs.readFile(file, (error, data) => {
