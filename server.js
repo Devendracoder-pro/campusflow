@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const db = require('./db');
 const auth = require('./auth');
-const { handleApi, handleAttendance, handlePayments, handleStaff, handleAudit, handleDashboard, handleOnboarding } = require('./api');
+const { handleApi, handleAttendance, handleAttendanceMark, handleFacultyAccounts, handlePayments, handleStaff, handleAudit, handleDashboard, handleOnboarding } = require('./api');
 
 const root = __dirname;
 const builtRoot = path.join(root, 'dist');
@@ -24,6 +24,8 @@ async function body(req) {
 }
 function createServer() {
   return http.createServer((req, res) => {
+    if (req.url === '/api/faculty/create' || req.url === '/api/faculty/assigned') { handleFacultyAccounts(req, res).catch(() => json(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'Unable to manage faculty accounts.' } })); return; }
+    if (req.url === '/api/attendance/mark') { handleAttendanceMark(req, res).catch(() => json(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'Unable to mark attendance.' } })); return; }
     if (req.url.startsWith('/api/students') || req.url.startsWith('/api/faculty') || req.url.startsWith('/api/courses')) {
       handleApi(req, res).catch(() => json(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'Unable to complete the request.' } }));
       return;

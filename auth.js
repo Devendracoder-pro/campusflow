@@ -55,4 +55,4 @@ async function logout(cookieHeaderValue) {
   const token = parseCookies(cookieHeaderValue)[SESSION_COOKIE];
   if (token) await db.query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash(token)]);
 }
-module.exports = { SESSION_COOKIE, cookieHeader, clearCookie, register, login, currentUser, logout };
+module.exports = { SESSION_COOKIE, cookieHeader, clearCookie, hashPassword, register, login, currentUser, logout };

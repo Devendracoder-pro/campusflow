@@ -1,4 +1,4 @@
-const { randomUUID } = require('node:crypto');
+const { randomBytes, randomUUID } = require('node:crypto');
 const db = require('./db');
 const auth = require('./auth');
 
@@ -7,6 +7,7 @@ const roles = {
   principal: new Set(['read', 'manage', 'staff']),
   administrator: new Set(['read', 'manage']),
   faculty: new Set(['read']),
+  student: new Set(['read']),
   accountant: new Set(['read']),
   read_only: new Set(['read'])
 };
@@ -54,7 +55,16 @@ async function handleApi(req, res) {
   try { user = await session(req, res, action); if (!user) return true; } catch { return fail(res, 503, 'DATABASE_UNAVAILABLE', 'Database unavailable.'); }
   try {
     if (req.method === 'GET') {
-      const result = id ? await db.query(`SELECT ${config.columns} FROM ${config.table} WHERE organization_id = $1 AND id = $2`, [user.organization_id, id]) : await db.query(`SELECT ${config.columns} FROM ${config.table} WHERE organization_id = $1 ORDER BY ${config.order}`, [user.organization_id]);
+      let result;
+      if (user.role === 'faculty' && !id) {
+        const facultyFilter = 'JOIN faculty_course_mappings fcm ON fcm.organization_id = x.organization_id AND fcm.course_id = x.id JOIN faculty f ON f.organization_id = fcm.organization_id AND f.id = fcm.faculty_id';
+        const facultyWhere = 'WHERE x.organization_id = $1 AND lower(f.email) = lower($2)';
+        if (type === 'courses') result = await db.query(`SELECT DISTINCT x.id, x.name, x.code, x.department, x.credits, x.faculty_id AS "facultyId", x.fee, x.fee_cycle AS "feeCycle" FROM courses x ${facultyFilter} ${facultyWhere} ORDER BY x.${config.order}`, [user.organization_id, user.email]);
+        else if (type === 'students') result = await db.query(`SELECT DISTINCT x.id, x.name, x.roll, x.email, x.course_id AS "courseId", x.year, x.status, x.joined FROM students x ${facultyFilter.replace('fcm.course_id = x.id', 'fcm.course_id = x.course_id')} ${facultyWhere} ORDER BY x.${config.order}`, [user.organization_id, user.email]);
+        else result = await db.query(`SELECT x.id, x.name, x.email, x.department, x.designation FROM faculty x WHERE x.organization_id = $1 AND lower(x.email) = lower($2) ORDER BY x.${config.order}`, [user.organization_id, user.email]);
+      } else {
+        result = id ? await db.query(`SELECT ${config.columns} FROM ${config.table} WHERE organization_id = $1 AND id = $2`, [user.organization_id, id]) : await db.query(`SELECT ${config.columns} FROM ${config.table} WHERE organization_id = $1 ORDER BY ${config.order}`, [user.organization_id]);
+      }
       return json(res, 200, id ? (result.rows[0] || null) : { data: result.rows });
     }
     if (req.method === 'POST') {
@@ -91,11 +101,86 @@ async function handleAttendance(req, res) {
   const url = new URL(req.url, 'http://localhost'); const match = url.pathname.match(/^\/api\/attendance(?:\/([^/]+))?$/); if (!match) return false;
   const user = await session(req, res, req.method === 'GET' ? 'read' : 'manage'); if (!user) return true;
   try {
-    if (req.method === 'GET') { const result = await db.query('SELECT student_id AS "studentId", attended_on AS date, status FROM attendance WHERE organization_id=$1 AND ($2::date IS NULL OR attended_on=$2::date) ORDER BY attended_on DESC', [user.organization_id, url.searchParams.get('date') || null]); return json(res, 200, { data: result.rows }); }
+    if (req.method === 'GET') { const result = await db.query('SELECT a.student_id AS "studentId", a.course_id AS "courseId", a.faculty_id AS "facultyId", a.attended_on AS date, a.status FROM attendance a WHERE a.organization_id=$1 AND ($2::date IS NULL OR a.attended_on=$2::date) AND ($3::text <> \'faculty\' OR EXISTS (SELECT 1 FROM faculty f JOIN faculty_course_mappings m ON m.faculty_id=f.id AND m.organization_id=f.organization_id WHERE f.organization_id=a.organization_id AND lower(f.email)=lower($4) AND m.course_id=a.course_id)) ORDER BY a.attended_on DESC', [user.organization_id, url.searchParams.get('date') || null, user.role, user.email]); return json(res, 200, { data: result.rows }); }
     if (req.method !== 'PUT' || !match[1]) return fail(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.');
     const entries = await readBody(req); if (!Array.isArray(entries) || !entries.length) return fail(res, 400, 'VALIDATION_ERROR', 'Attendance entries are required.');
     const client = await db.pool.connect(); try { await client.query('BEGIN'); for (const entry of entries) { if (!['Present', 'Absent', 'Late', 'Unmarked'].includes(entry.status)) throw new Error('Invalid attendance status.'); if (entry.status === 'Unmarked') await client.query('DELETE FROM attendance WHERE organization_id=$1 AND student_id=$2 AND attended_on=$3', [user.organization_id, entry.studentId, match[1]]); else await client.query('INSERT INTO attendance (organization_id,student_id,attended_on,status) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,student_id,attended_on) DO UPDATE SET status=EXCLUDED.status', [user.organization_id, entry.studentId, match[1], entry.status]); } await client.query('COMMIT'); return json(res, 200, { ok: true }); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   } catch (error) { return fail(res, error.code === '23503' ? 400 : 500, error.code === '23503' ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR', error.code === '23503' ? 'Invalid attendance student.' : 'Unable to save attendance.'); }
+}
+
+async function handleFacultyAccounts(req, res) {
+  const url = new URL(req.url, 'http://localhost');
+  if (!['/api/faculty/create', '/api/faculty/assigned'].includes(url.pathname)) return false;
+  const user = await session(req, res, req.method === 'GET' ? 'read' : 'staff');
+  if (!user) return true;
+  try {
+    if (url.pathname === '/api/faculty/create') {
+      if (req.method !== 'POST') return fail(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.');
+      if (!['owner', 'principal'].includes(user.role)) return fail(res, 403, 'FORBIDDEN', 'Only owner and principal can create faculty accounts.');
+      const input = await readBody(req);
+      const name = text(input.name, 'Faculty name');
+      const email = text(input.email, 'Faculty email', 320).toLowerCase();
+      const mobile = typeof input.mobileNumber === 'string' ? input.mobileNumber.replace(/\D/g, '') : '';
+      if (!/^\d{10,15}$/.test(mobile)) return fail(res, 400, 'VALIDATION_ERROR', 'Valid faculty mobile number is required.');
+      const department = text(input.department, 'Department');
+      const designation = text(input.designation, 'Designation', 80);
+      const mappings = Array.isArray(input.courseMappings) ? input.courseMappings : [];
+      if (!mappings.length) return fail(res, 400, 'VALIDATION_ERROR', 'At least one course assignment is required.');
+      const cleanMappings = mappings.map(mapping => ({ courseId: text(mapping.courseId, 'Course'), subjectName: text(mapping.subjectName, 'Subject name') }));
+      const temporaryPassword = randomBytes(9).toString('base64url');
+      const client = await db.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const account = await client.query('INSERT INTO users (email, password_hash, display_name, mobile_number) VALUES ($1, $2, $3, $4) RETURNING id, email, display_name', [email, auth.hashPassword(temporaryPassword), name, mobile]);
+        await client.query('INSERT INTO memberships (organization_id, user_id, role) VALUES ($1, $2, $3)', [user.organization_id, account.rows[0].id, 'faculty']);
+        const faculty = await client.query("INSERT INTO faculty (organization_id, name, email, department, designation, password_hash, role, created_by, faculty_code) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'CF-FAC-' || nextval('faculty_code_seq')::text) RETURNING id, faculty_code AS \"facultyId\", name, email, department, designation", [user.organization_id, name, email, department, designation, auth.hashPassword(temporaryPassword), 'faculty', user.id]);
+        for (const mapping of cleanMappings) await client.query('INSERT INTO faculty_course_mappings (organization_id, faculty_id, course_id, subject_name) VALUES ($1,$2,$3,$4)', [user.organization_id, faculty.rows[0].id, mapping.courseId, mapping.subjectName]);
+        await client.query('COMMIT');
+        return json(res, 201, { faculty: faculty.rows[0], courseMappings: cleanMappings, credentials: { email, temporaryPassword } });
+      } catch (error) { await client.query('ROLLBACK'); if (error.code === '23505') return fail(res, 409, 'CONFLICT', 'A faculty account or course assignment already exists.'); if (error.code === '23503') return fail(res, 400, 'VALIDATION_ERROR', 'One of the selected courses is invalid.'); throw error; } finally { client.release(); }
+    }
+    if (req.method !== 'GET') return fail(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.');
+    if (user.role !== 'faculty') return fail(res, 403, 'FORBIDDEN', 'This view is only available to faculty accounts.');
+    const faculty = await db.query('SELECT id, faculty_code AS "facultyId", name, email, department, designation FROM faculty WHERE organization_id=$1 AND lower(email)=lower($2)', [user.organization_id, user.email]);
+    if (!faculty.rowCount) return fail(res, 404, 'NOT_FOUND', 'Faculty profile not found.');
+    const courses = await db.query('SELECT m.course_id AS "courseId", m.subject_name AS "subjectName", c.name, c.code, c.department FROM faculty_course_mappings m JOIN courses c ON c.organization_id=m.organization_id AND c.id=m.course_id WHERE m.organization_id=$1 AND m.faculty_id=$2 ORDER BY c.name', [user.organization_id, faculty.rows[0].id]);
+    const students = await db.query('SELECT s.id, s.name, s.roll, s.email, s.course_id AS "courseId", c.name AS "courseName", c.code AS "courseCode" FROM students s JOIN courses c ON c.organization_id=s.organization_id AND c.id=s.course_id JOIN faculty_course_mappings m ON m.organization_id=s.organization_id AND m.course_id=s.course_id WHERE s.organization_id=$1 AND m.faculty_id=$2 AND s.status=$3 ORDER BY s.name', [user.organization_id, faculty.rows[0].id, 'Active']);
+    return json(res, 200, { faculty: faculty.rows[0], courses: courses.rows, students: students.rows });
+  } catch (error) { return fail(res, 500, 'INTERNAL_ERROR', 'Unable to manage faculty accounts.'); }
+}
+
+async function handleAttendanceMark(req, res) {
+  if (new URL(req.url, 'http://localhost').pathname !== '/api/attendance/mark') return false;
+  const user = await session(req, res, 'read');
+  if (!user) return true;
+  if (req.method !== 'POST') return fail(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.');
+  if (!['owner', 'principal', 'faculty'].includes(user.role)) return fail(res, 403, 'FORBIDDEN', 'You do not have permission to mark attendance.');
+  try {
+    const input = await readBody(req);
+    const courseId = text(input.courseId, 'Course');
+    const date = text(input.date, 'Attendance date', 10);
+    if (!Array.isArray(input.entries) || !input.entries.length) return fail(res, 400, 'VALIDATION_ERROR', 'Attendance entries are required.');
+    const faculty = await db.query('SELECT f.id FROM faculty f WHERE f.organization_id=$1 AND lower(f.email)=lower($2)', [user.organization_id, user.email]);
+    const facultyId = faculty.rows[0]?.id || null;
+    if (user.role === 'faculty') {
+      if (!facultyId) return fail(res, 403, 'FORBIDDEN', 'Faculty profile not found.');
+      const mapped = await db.query('SELECT 1 FROM faculty_course_mappings WHERE organization_id=$1 AND faculty_id=$2 AND course_id=$3', [user.organization_id, facultyId, courseId]);
+      if (!mapped.rowCount) return fail(res, 403, 'FORBIDDEN', 'You can only mark attendance for assigned courses.');
+    }
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const entry of input.entries) {
+        const status = { PRESENT: 'Present', ABSENT: 'Absent', LATE: 'Late', Present: 'Present', Absent: 'Absent', Late: 'Late' }[entry.status];
+        if (!status) throw new Error('Invalid attendance status.');
+        const validStudent = await client.query('SELECT 1 FROM students WHERE organization_id=$1 AND id=$2 AND course_id=$3', [user.organization_id, entry.studentId, courseId]);
+        if (!validStudent.rowCount) throw new Error('Student is not enrolled in this course.');
+        await client.query('INSERT INTO attendance (organization_id, student_id, course_id, faculty_id, attended_on, status) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (organization_id, student_id, course_id, attended_on) DO UPDATE SET status=EXCLUDED.status, faculty_id=EXCLUDED.faculty_id', [user.organization_id, entry.studentId, courseId, facultyId, date, status]);
+      }
+      await client.query('COMMIT');
+      return json(res, 200, { ok: true, courseId, facultyId, date, count: input.entries.length });
+    } catch (error) { await client.query('ROLLBACK'); return fail(res, 400, 'VALIDATION_ERROR', error.message); } finally { client.release(); }
+  } catch (error) { return fail(res, 400, 'VALIDATION_ERROR', error.message); }
 }
 async function handlePayments(req, res) {
   if (new URL(req.url, 'http://localhost').pathname !== '/api/payments') return false;
@@ -182,7 +267,7 @@ async function handleOnboarding(req, res) {
     return fail(res, 500, 'INTERNAL_ERROR', 'Unable to load onboarding status.');
   }
 }
-module.exports = { handleApi, handleAttendance, handlePayments, handleAudit, handleDashboard, handleOnboarding };
+module.exports = { handleApi, handleAttendance, handleAttendanceMark, handleFacultyAccounts, handlePayments, handleAudit, handleDashboard, handleOnboarding };
 
 async function handleStaff(req, res) {
   const url = new URL(req.url, 'http://localhost'); const match = url.pathname.match(/^\/api\/staff(?:\/([^/]+))?$/); if (!match) return false;
