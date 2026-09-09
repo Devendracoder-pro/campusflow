@@ -142,10 +142,10 @@ test('staff can only be added after the user has registered', async t => {
   const response = await fetch(`http://127.0.0.1:${address.port}/api/staff`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: authCookie },
-    body: JSON.stringify({ email: 'notregistered.user@example.com', role: 'faculty' })
+    body: JSON.stringify({ displayName: 'Not Registered', mobileNumber: '9876543210', role: 'faculty' })
   });
   assert.equal(response.status, 404);
-  assert.equal((await response.json()).error.message, 'User must register before being added to staff.');
+  assert.equal((await response.json()).error.message, 'Registered user with this name and mobile number was not found.');
 });
 
 test('connected staff receive unique employee IDs', async t => {
@@ -154,25 +154,27 @@ test('connected staff receive unique employee IDs', async t => {
   t.after(() => server.close());
   const address = server.address();
   const suffix = `${Date.now()}.${Math.random().toString(36).slice(2)}`;
-  const register = async (displayName, email, organizationName) => fetch(`http://127.0.0.1:${address.port}/api/auth/register`, {
+  const register = async (displayName, email, organizationName, mobileNumber) => fetch(`http://127.0.0.1:${address.port}/api/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ organizationName, displayName, email, password: 'supersecurepass123' })
+    body: JSON.stringify({ organizationName, displayName, email, mobileNumber, password: 'supersecurepass123' })
   });
-  const owner = await register('Owner User', `owner.${suffix}@example.com`, `ID College ${suffix}`);
+  const owner = await register('Owner User', `owner.${suffix}@example.com`, `ID College ${suffix}`, `900000${String(Date.now()).slice(-4)}`);
   assert.equal(owner.status, 201);
   const ownerCookie = owner.headers.get('set-cookie');
-  const staffOne = await register('Staff One', `staff.one.${suffix}@example.com`, `Other College One ${suffix}`);
-  const staffTwo = await register('Staff Two', `staff.two.${suffix}@example.com`, `Other College Two ${suffix}`);
+  const staffOneMobile = `910000${String(Date.now()).slice(-4)}`;
+  const staffTwoMobile = `920000${String(Date.now()).slice(-4)}`;
+  const staffOne = await register('Staff One', `staff.one.${suffix}@example.com`, `Other College One ${suffix}`, staffOneMobile);
+  const staffTwo = await register('Staff Two', `staff.two.${suffix}@example.com`, `Other College Two ${suffix}`, staffTwoMobile);
   assert.equal(staffOne.status, 201);
   assert.equal(staffTwo.status, 201);
-  const add = async (email) => fetch(`http://127.0.0.1:${address.port}/api/staff`, {
+  const add = async (displayName, mobileNumber) => fetch(`http://127.0.0.1:${address.port}/api/staff`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: ownerCookie },
-    body: JSON.stringify({ email, role: 'faculty' })
+    body: JSON.stringify({ displayName, mobileNumber, role: 'faculty' })
   });
-  const first = await add(`staff.one.${suffix}@example.com`);
-  const second = await add(`staff.two.${suffix}@example.com`);
+  const first = await add('Staff One', staffOneMobile);
+  const second = await add('Staff Two', staffTwoMobile);
   assert.equal(first.status, 201);
   assert.equal(second.status, 201);
   const firstId = (await first.json()).employeeId;

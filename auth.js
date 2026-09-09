@@ -18,6 +18,7 @@ function validCredentials(input) {
   if (!input || typeof input.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) throw new Error('Enter a valid email address.');
   if (typeof input.password !== 'string' || input.password.length < 12 || input.password.length > 200) throw new Error('Password must be between 12 and 200 characters.');
   if (typeof input.displayName !== 'string' || input.displayName.trim().length < 2 || input.displayName.length > 160) throw new Error('Display name is required.');
+  if (input.mobileNumber !== undefined && input.mobileNumber !== '' && !/^\+?[0-9\s()-]{10,20}$/.test(input.mobileNumber)) throw new Error('Enter a valid mobile number.');
 }
 function cookieHeader(token, expires) { return `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor((expires - Date.now()) / 1000)}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`; }
 function clearCookie() { return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`; }
@@ -28,7 +29,7 @@ async function register(input) {
   try {
     await client.query('BEGIN');
     const organization = await client.query('INSERT INTO organizations (name) VALUES ($1) RETURNING id, name', [input.organizationName?.trim()]);
-    const user = await client.query('INSERT INTO users (email, password_hash, display_name) VALUES (lower($1), $2, $3) RETURNING id, email, display_name', [input.email.trim(), hashPassword(input.password), input.displayName.trim()]);
+    const user = await client.query('INSERT INTO users (email, password_hash, display_name, mobile_number) VALUES (lower($1), $2, $3, $4) RETURNING id, email, display_name', [input.email.trim(), hashPassword(input.password), input.displayName.trim(), input.mobileNumber?.trim() || null]);
     await client.query('INSERT INTO memberships (organization_id, user_id, role) VALUES ($1, $2, $3)', [organization.rows[0].id, user.rows[0].id, 'owner']);
     await client.query('COMMIT');
     return { user: user.rows[0], organization: organization.rows[0], role: 'owner' };
