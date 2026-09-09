@@ -147,3 +147,37 @@ test('staff can only be added after the user has registered', async t => {
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.message, 'User must register before being added to staff.');
 });
+
+test('connected staff receive unique employee IDs', async t => {
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const suffix = `${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  const register = async (displayName, email, organizationName) => fetch(`http://127.0.0.1:${address.port}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ organizationName, displayName, email, password: 'supersecurepass123' })
+  });
+  const owner = await register('Owner User', `owner.${suffix}@example.com`, `ID College ${suffix}`);
+  assert.equal(owner.status, 201);
+  const ownerCookie = owner.headers.get('set-cookie');
+  const staffOne = await register('Staff One', `staff.one.${suffix}@example.com`, `Other College One ${suffix}`);
+  const staffTwo = await register('Staff Two', `staff.two.${suffix}@example.com`, `Other College Two ${suffix}`);
+  assert.equal(staffOne.status, 201);
+  assert.equal(staffTwo.status, 201);
+  const add = async (email) => fetch(`http://127.0.0.1:${address.port}/api/staff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: ownerCookie },
+    body: JSON.stringify({ email, role: 'faculty' })
+  });
+  const first = await add(`staff.one.${suffix}@example.com`);
+  const second = await add(`staff.two.${suffix}@example.com`);
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  const firstId = (await first.json()).employeeId;
+  const secondId = (await second.json()).employeeId;
+  assert.match(firstId, /^CF-[0-9A-F]{8}$/);
+  assert.match(secondId, /^CF-[0-9A-F]{8}$/);
+  assert.notEqual(firstId, secondId);
+});
