@@ -25,6 +25,8 @@ import {
 const navigation = [
   { label: 'Dashboard', icon: LayoutDashboard },
   { label: 'Students', icon: Users },
+  { label: 'Faculty', icon: BookOpen },
+  { label: 'Courses', icon: BookOpen },
   { label: 'Attendance', icon: ClipboardCheck },
   { label: 'Timetable', icon: CalendarDays },
   { label: 'Fees', icon: WalletCards },
@@ -79,6 +81,9 @@ export default function CampusFlowDashboard({
   const [profileOpen, setProfileOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [dialog, setDialog] = useState(null);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -133,6 +138,50 @@ export default function CampusFlowDashboard({
   const notify = (message) => {
     setFeedback(message);
     window.setTimeout(() => setFeedback(''), 2600);
+  };
+
+  const resourceConfig = {
+    Students: { endpoint: 'students', fields: [['name', 'Name'], ['roll', 'Roll number'], ['email', 'Email'], ['courseId', 'Course ID'], ['year', 'Year'], ['status', 'Status'], ['joined', 'Joined']] },
+    Faculty: { endpoint: 'faculty', fields: [['name', 'Name'], ['email', 'Email'], ['department', 'Department'], ['designation', 'Designation']] },
+    Courses: { endpoint: 'courses', fields: [['name', 'Name'], ['code', 'Code'], ['department', 'Department'], ['credits', 'Credits'], ['facultyId', 'Faculty ID'], ['fee', 'Fee'], ['feeCycle', 'Fee cycle']] },
+  };
+
+  const openCreate = (page) => { setForm({}); setDialog({ mode: 'create', page }); };
+  const openEdit = (page, record) => { setForm(record); setDialog({ mode: 'edit', page, id: record.id }); };
+  const saveRecord = async (event) => {
+    event.preventDefault();
+    const config = resourceConfig[dialog.page];
+    setSaving(true);
+    try {
+      const path = `/api/${config.endpoint}${dialog.id ? `/${dialog.id}` : ''}`;
+      const response = await fetch(path, { method: dialog.id ? 'PATCH' : 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error?.message || 'Unable to save record.');
+      const refreshed = await Promise.all(['/students', '/faculty', '/courses'].map((pathName) => fetch(`${apiBase}${pathName}`, { credentials: 'include' }).then((item) => item.json())));
+      setStudents(refreshed[0].data || []); setFaculty(refreshed[1].data || []); setCourses(refreshed[2].data || []);
+      setDialog(null); notify(dialog.id ? 'Record updated.' : 'Record created.');
+    } catch (error) { notify(error.message); } finally { setSaving(false); }
+  };
+  const deleteRecord = async (page, id) => {
+    if (!window.confirm(`Delete this ${page.slice(0, -1).toLowerCase()}?`)) return;
+    const config = resourceConfig[page];
+    try {
+      const response = await fetch(`${apiBase}/${config.endpoint}/${id}`, { method: 'DELETE', credentials: 'include' });
+      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error?.message || 'Unable to delete record.'); }
+      if (page === 'Students') setStudents((items) => items.filter((item) => item.id !== id));
+      if (page === 'Faculty') setFaculty((items) => items.filter((item) => item.id !== id));
+      if (page === 'Courses') setCourses((items) => items.filter((item) => item.id !== id));
+      notify('Record deleted.');
+    } catch (error) { notify(error.message); }
+  };
+
+  const renderResourcePage = (page) => {
+    const config = resourceConfig[page];
+    const records = page === 'Students' ? students : page === 'Faculty' ? faculty : courses;
+    return <section className="space-y-6">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">Workspace / {page}</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">{page}</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Manage live records from your campus workspace.</p></div><button type="button" onClick={() => openCreate(page)} className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700">Add {page.slice(0, -1).toLowerCase()}</button></div>
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/50 dark:text-slate-400"><tr>{config.fields.map(([, label]) => <th key={label} className="px-5 py-3 font-semibold">{label}</th>)}<th className="px-5 py-3 font-semibold">Actions</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-700">{records.length ? records.map((record) => <tr key={record.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">{config.fields.map(([key]) => <td key={key} className="px-5 py-4 text-sm text-slate-700 dark:text-slate-200">{key === 'fee' ? `₹${Number(record[key] || 0).toLocaleString('en-IN')}` : String(record[key] ?? '-')}</td>)}<td className="whitespace-nowrap px-5 py-4"><button type="button" onClick={() => openEdit(page, record)} className="mr-3 text-sm font-semibold text-indigo-600 hover:text-indigo-700">Edit</button><button type="button" onClick={() => deleteRecord(page, record.id)} className="text-sm font-semibold text-rose-600 hover:text-rose-700">Delete</button></td></tr>) : <tr><td colSpan={config.fields.length + 1} className="px-5 py-12 text-center text-sm text-slate-500">No {page.toLowerCase()} found.</td></tr>}</tbody></table></div></div>
+    </section>;
   };
 
   return (
@@ -197,6 +246,11 @@ export default function CampusFlowDashboard({
             </header>
 
             <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-7 md:px-8 lg:px-10">
+              {activePage !== 'Dashboard' && resourceConfig[activePage] && renderResourcePage(activePage)}
+              {activePage === 'Attendance' && <section className="space-y-6"><div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">Workspace / Attendance</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">Attendance</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Review attendance entries returned by the live workspace.</p></div><div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/50 dark:text-slate-400"><tr><th className="px-5 py-3">Date</th><th className="px-5 py-3">Student</th><th className="px-5 py-3">Course</th><th className="px-5 py-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-700">{attendanceEntries.length ? attendanceEntries.map((entry, index) => <tr key={`${entry.studentId}-${entry.date}-${index}`}><td className="px-5 py-4 text-sm">{entry.date}</td><td className="px-5 py-4 text-sm">{students.find((student) => student.id === entry.studentId)?.name || entry.studentId}</td><td className="px-5 py-4 text-sm">{courses.find((course) => course.id === entry.courseId)?.code || entry.courseId || '-'}</td><td className="px-5 py-4"><Badge tone={entry.status === 'Present' ? 'emerald' : entry.status === 'Late' ? 'amber' : 'rose'}>{entry.status}</Badge></td></tr>) : <tr><td colSpan="4" className="px-5 py-12 text-center text-sm text-slate-500">No attendance entries found.</td></tr>}</tbody></table></div></div></section>}
+              {activePage === 'Fees' && <section className="space-y-6"><div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">Workspace / Fees</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">Fees & payments</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Review recorded payments from the live workspace.</p></div><div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/50 dark:text-slate-400"><tr><th className="px-5 py-3">Date</th><th className="px-5 py-3">Student</th><th className="px-5 py-3">Amount</th><th className="px-5 py-3">Method</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-700">{payments.length ? payments.map((payment) => <tr key={payment.id}><td className="px-5 py-4 text-sm">{payment.date}</td><td className="px-5 py-4 text-sm">{students.find((student) => student.id === payment.studentId)?.name || payment.studentId}</td><td className="px-5 py-4 text-sm font-semibold">₹{Number(payment.amount || 0).toLocaleString('en-IN')}</td><td className="px-5 py-4 text-sm">{payment.method || '-'}</td></tr>) : <tr><td colSpan="4" className="px-5 py-12 text-center text-sm text-slate-500">No payments found.</td></tr>}</tbody></table></div></div></section>}
+              {activePage !== 'Dashboard' && !resourceConfig[activePage] && !['Attendance', 'Fees'].includes(activePage) && <section className="space-y-6"><div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">Workspace / {activePage}</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">{activePage}</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">This area is connected to the current API, but no records are available for this module yet.</p></div><div className="rounded-xl border border-slate-200 bg-white p-8 text-sm text-slate-500 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">No live {activePage.toLowerCase()} data is exposed by the current backend contract.</div></section>}
+              {activePage === 'Dashboard' && <>
               <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
                 <div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">{todayLabel}</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white md:text-4xl">Good morning, {currentUser.name.split(' ')[0]}</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Metrics below are fetched from your CampusFlow workspace.</p></div>
                 <button type="button" onClick={() => notify('Calendar view opened.')} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-700"><CalendarDays size={17} /> View calendar</button>
@@ -219,7 +273,9 @@ export default function CampusFlowDashboard({
                 <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:col-span-2 dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Recent assignment submissions</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Only connected assignment data is shown</p></div><button type="button" onClick={() => notify('Assignments endpoint is not available in the current API.')} className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-300">View all</button></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left"><thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/50 dark:text-slate-400"><tr><th className="px-5 py-3 font-semibold">Assignment</th><th className="px-5 py-3 font-semibold">Due date</th><th className="px-5 py-3 font-semibold">Submissions</th><th className="px-5 py-3 font-semibold">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-700">{filteredAssignments.length ? filteredAssignments.map((item) => <tr key={item.title} className="transition hover:bg-slate-50 dark:hover:bg-slate-700/40"><td className="px-5 py-4"><strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">{item.title}</strong><span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{item.course}</span></td><td className="whitespace-nowrap px-5 py-4 text-xs text-slate-500 dark:text-slate-400">{item.due}</td><td className="px-5 py-4 text-sm text-slate-600 dark:text-slate-300">{item.submissions}</td><td className="px-5 py-4"><Badge tone={item.status === 'Submitted' ? 'emerald' : item.status === 'Graded' ? 'indigo' : 'amber'}>{item.status}</Badge></td></tr>) : <tr><td colSpan="4" className="px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400">No assignment data is available from the current API.</td></tr>}</tbody></table></div></article>
                 <article className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700"><div><h2 className="font-bold text-slate-900 dark:text-white">Notice board</h2><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Only connected notices are shown</p></div><button type="button" onClick={() => notify('Announcements endpoint is not available in the current API.')} aria-label="Add notice" className="rounded-lg p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"><span className="text-xl leading-none">+</span></button></div><div className="divide-y divide-slate-100 dark:divide-slate-700">{emptyNotices.length ? emptyNotices.map((notice) => <div key={notice.title} className="px-5 py-4"><Badge tone={notice.tone}>{notice.category}</Badge><h3 className="mt-2 text-sm font-semibold leading-5 text-slate-800 dark:text-slate-100">{notice.title}</h3><p className="mt-1 text-xs text-slate-400">{notice.date}</p></div>) : <p className="px-5 py-8 text-sm text-slate-500 dark:text-slate-400">No announcements are available yet.</p>}</div><button type="button" onClick={() => notify('Announcements endpoint is not available in the current API.')} className="w-full border-t border-slate-100 px-5 py-3 text-left text-sm font-semibold text-indigo-600 hover:bg-slate-50 dark:border-slate-700 dark:text-indigo-300 dark:hover:bg-slate-700/40">View all announcements <ChevronRight className="inline" size={15} /></button></article>
               </section>
+              </>}
             </main>
+            {dialog && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><form onSubmit={saveRecord} className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 shadow-2xl dark:bg-slate-800" aria-labelledby="record-dialog-title"><div className="mb-6 flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-300">CampusFlow workspace</p><h2 id="record-dialog-title" className="mt-1 text-xl font-bold text-slate-900 dark:text-white">{dialog.mode === 'edit' ? 'Edit' : 'Add'} {dialog.page.slice(0, -1)}</h2></div><button type="button" onClick={() => setDialog(null)} aria-label="Close dialog" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"><X size={19} /></button></div><div className="grid gap-4 sm:grid-cols-2">{resourceConfig[dialog.page].fields.map(([key, label]) => <label key={key} className="space-y-1.5"><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><input required={key !== 'facultyId'} type={['year', 'credits', 'fee'].includes(key) ? 'number' : key === 'joined' ? 'date' : key === 'email' ? 'email' : 'text'} value={form[key] ?? ''} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 dark:border-slate-600 dark:bg-slate-900 dark:text-white" /></label>)}</div><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setDialog(null)} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Cancel</button><button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60">{saving ? 'Saving...' : 'Save record'}</button></div></form></div>}
             {feedback && <div role="status" aria-live="polite" className="fixed bottom-5 right-5 z-50 rounded-lg bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-xl dark:bg-white dark:text-slate-900">{feedback}</div>}
           </div>
         </div>
